@@ -1,8 +1,17 @@
 {
   "name": "instagram-scraper",
   "version": "1.0.0",
+  "type": "module",
   "main": "scrape_comments.js",
   "scripts": {
+    "scrape-comments": "node scrape_comments.js",
+    "scrape-profile": "node scrape_profile.js", 
+    "scrape-posts": "node scrape_posts.js",
+    "scrape-urls": "node scrape_urls.js",
+    "comments": "npm run scrape-comments",
+    "profile": "npm run scrape-profile", 
+    "posts": "npm run scrape-posts",
+    "urls": "npm run scrape-urls",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "",

@@ -1,4 +1,7 @@
 /comments/*
+/post-urls/*
+/profiles/*
+/posts/*
 
 /node_modules
 
