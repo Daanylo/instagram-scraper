@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, readFile, access } from 'fs/promises';
 import { join, isAbsolute, basename } from 'path';
+import { constants } from 'fs';
 import 'dotenv/config';
 
 // ============================================================================
@@ -242,6 +243,7 @@ async function scrapeProfile(profileUrl, maxPosts = 100, pageSize = 24) {
         }
 
         const allPosts = [];
+        const seenPostIds = new Set(); // Track unique post IDs to prevent duplicates
         let pageCount = 0;
 
         if (!profileInfo.is_private && maxPosts > 0) {
@@ -253,10 +255,23 @@ async function scrapeProfile(profileUrl, maxPosts = 100, pageSize = 24) {
                 
                 const result = await fetchPostsPage(username, '', pageSize);
                 const parsed = result.posts.map(parsePost);
-                allPosts.push(...parsed);
                 
-                if (parsed.length > 0) {
-                    console.log(`   ✅ Fetched ${parsed.length} posts`);
+                // Filter out duplicates based on post ID
+                const uniquePosts = parsed.filter(post => {
+                    if (seenPostIds.has(post.id)) {
+                        return false;
+                    }
+                    seenPostIds.add(post.id);
+                    return true;
+                });
+                
+                allPosts.push(...uniquePosts);
+                
+                if (uniquePosts.length > 0) {
+                    console.log(`   ✅ Fetched ${uniquePosts.length} unique posts`);
+                    if (uniquePosts.length < parsed.length) {
+                        console.log(`   ℹ️  Filtered out ${parsed.length - uniquePosts.length} duplicate(s)`);
+                    }
                 } else {
                     console.log(`   ⚠️  No posts data available (Instagram API limitation for this account)`);
                     console.log(`   📊 Profile shows ${profileInfo.posts_count.toLocaleString()} total posts exist`);
@@ -288,17 +303,82 @@ async function scrapeProfile(profileUrl, maxPosts = 100, pageSize = 24) {
     }
 }
 
+async function loadExistingProfile(filePath) {
+    try {
+        await access(filePath, constants.F_OK);
+        const content = await readFile(filePath, 'utf-8');
+        return JSON.parse(content);
+    } catch (error) {
+        return null; // File doesn't exist
+    }
+}
+
 async function saveProfile(result, filename = null) {
     const profilesDir = join(process.cwd(), 'profiles');
     await mkdir(profilesDir, { recursive: true });
 
+    // Use consistent filename without timestamp
     const outputFileName = filename
         ? (isAbsolute(filename) ? basename(filename) : filename)
-        : `profile_${result.username}_${Date.now()}.json`;
+        : `profile_${result.username}.json`;
 
     const outputPath = join(profilesDir, outputFileName);
+    
+    // Load existing data if file exists
+    const existing = await loadExistingProfile(outputPath);
+    
+    if (existing) {
+        console.log(`\n📂 Found existing profile with ${existing.posts.length} posts`);
+        
+        // Merge posts and deduplicate by ID
+        const allPostsMap = new Map();
+        
+        // Add existing posts
+        existing.posts.forEach(post => {
+            allPostsMap.set(post.id, post);
+        });
+        
+        // Add/update with new posts
+        let newCount = 0;
+        let updatedCount = 0;
+        result.posts.forEach(post => {
+            if (allPostsMap.has(post.id)) {
+                // Post exists, update it
+                allPostsMap.set(post.id, post);
+                updatedCount++;
+            } else {
+                // New post
+                allPostsMap.set(post.id, post);
+                newCount++;
+            }
+        });
+        
+        const mergedPosts = Array.from(allPostsMap.values());
+        
+        if (newCount > 0) {
+            console.log(`   ➕ Added ${newCount} new post(s)`);
+        }
+        if (updatedCount > 0) {
+            console.log(`   🔄 Updated ${updatedCount} existing post(s)`);
+        }
+        if (newCount === 0 && updatedCount === 0) {
+            console.log(`   ℹ️  No new posts found`);
+        }
+        console.log(`   📊 Total unique posts: ${mergedPosts.length}`);
+        
+        // Update result with merged data
+        result.posts = mergedPosts;
+        result.totalPostsFetched = mergedPosts.length;
+        result.last_updated = new Date().toISOString();
+        result.first_scraped = existing.scrapedAt || existing.first_scraped;
+    } else {
+        console.log(`\n📝 Creating new profile file`);
+        result.first_scraped = result.scrapedAt;
+        result.last_updated = result.scrapedAt;
+    }
+
     await writeFile(outputPath, JSON.stringify(result, null, 2));
-    console.log(`\n💾 Saved: ${outputPath}`);
+    console.log(`💾 Saved: ${outputPath}`);
     return outputPath;
 }
 

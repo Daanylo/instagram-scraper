@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, readFile, access } from 'fs/promises';
 import { join, isAbsolute, basename } from 'path';
+import { constants } from 'fs';
 import 'dotenv/config';
 
 // ============================================================================
@@ -82,6 +83,7 @@ async function fetchCommentsPage(shortcode, endCursor = '', first = 50) {
 async function scrapeAllComments(postUrl, maxComments = 1000, pageSize = 50) {
     const shortcode = extractShortcode(postUrl);
     const allComments = [];
+    const seenCommentIds = new Set(); // Track unique comment IDs to prevent duplicates
     let endCursor = '';
     let hasNextPage = true;
     let pageCount = 0;
@@ -103,9 +105,22 @@ async function scrapeAllComments(postUrl, maxComments = 1000, pageSize = 50) {
             }
             
             const parsed = result.comments.map(parseComment);
-            allComments.push(...parsed);
             
-            console.log(`   ✓ Fetched ${parsed.length} comments`);
+            // Filter out duplicates based on comment ID
+            const uniqueComments = parsed.filter(comment => {
+                if (seenCommentIds.has(comment.id)) {
+                    return false;
+                }
+                seenCommentIds.add(comment.id);
+                return true;
+            });
+            
+            allComments.push(...uniqueComments);
+            
+            console.log(`   ✓ Fetched ${uniqueComments.length} unique comment(s)`);
+            if (uniqueComments.length < parsed.length) {
+                console.log(`   ℹ️  Filtered out ${parsed.length - uniqueComments.length} duplicate(s)`);
+            }
             
             hasNextPage = result.hasNextPage;
             endCursor = result.endCursor;
@@ -146,17 +161,78 @@ async function scrapeAllComments(postUrl, maxComments = 1000, pageSize = 50) {
     }
 }
 
+async function loadExistingComments(filePath) {
+    try {
+        await access(filePath, constants.F_OK);
+        const content = await readFile(filePath, 'utf-8');
+        return JSON.parse(content);
+    } catch (error) {
+        return null; // File doesn't exist
+    }
+}
+
 async function saveComments(result, filename = null) {
     const commentsDir = join(process.cwd(), 'comments');
     await mkdir(commentsDir, { recursive: true });
 
+    // Use consistent filename without timestamp
     const outputFileName = filename
         ? (isAbsolute(filename) ? basename(filename) : filename)
-        : `comments_${result.shortcode}_${Date.now()}.json`;
+        : `comments_${result.shortcode}.json`;
 
     const outputPath = join(commentsDir, outputFileName);
+    
+    // Load existing comments if file exists
+    const existing = await loadExistingComments(outputPath);
+    
+    if (existing) {
+        console.log(`\n📂 Found existing file with ${existing.length} comments`);
+        
+        // Merge comments and deduplicate by ID
+        const allCommentsMap = new Map();
+        
+        // Add existing comments
+        existing.forEach(comment => {
+            allCommentsMap.set(comment.id, comment);
+        });
+        
+        // Add/update with new comments
+        let newCount = 0;
+        let updatedCount = 0;
+        result.comments.forEach(comment => {
+            if (allCommentsMap.has(comment.id)) {
+                // Comment exists, update it (in case likes changed)
+                allCommentsMap.set(comment.id, comment);
+                updatedCount++;
+            } else {
+                // New comment
+                allCommentsMap.set(comment.id, comment);
+                newCount++;
+            }
+        });
+        
+        const mergedComments = Array.from(allCommentsMap.values());
+        
+        if (newCount > 0) {
+            console.log(`   ➕ Added ${newCount} new comment(s)`);
+        }
+        if (updatedCount > 0) {
+            console.log(`   🔄 Updated ${updatedCount} existing comment(s)`);
+        }
+        if (newCount === 0 && updatedCount === 0) {
+            console.log(`   ℹ️  No new comments found`);
+        }
+        console.log(`   📊 Total unique comments: ${mergedComments.length}`);
+        
+        // Update result with merged data
+        result.comments = mergedComments;
+        result.totalFetched = mergedComments.length;
+    } else {
+        console.log(`\n📝 Creating new comments file`);
+    }
+
     await writeFile(outputPath, JSON.stringify(result.comments, null, 2));
-    console.log(`\n💾 Saved: ${outputPath}`);
+    console.log(`💾 Saved: ${outputPath}`);
     return outputPath;
 }
 
@@ -164,9 +240,11 @@ async function saveComments(result, filename = null) {
 // Main
 // ============================================================================
 
-const POST_URL = 'https://www.instagram.com/p/DPeGrDmjA9R';
+const POST_URL = process.argv[2] || 'https://www.instagram.com/p/DPeGrDmjA9R';
+const MAX_COMMENTS = parseInt(process.argv[3]) || 1500;
+const DELAY_MS = 30;
 
-scrapeAllComments(POST_URL, 1500, 30)
+scrapeAllComments(POST_URL, MAX_COMMENTS, DELAY_MS)
     .then(async (result) => {
         console.log('\n' + '='.repeat(50));
         console.log('📈 SUMMARY');

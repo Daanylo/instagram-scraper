@@ -1,6 +1,7 @@
 import fetch from 'node-fetch';
-import { writeFile, mkdir } from 'fs/promises';
+import { writeFile, mkdir, readFile, access } from 'fs/promises';
 import { join } from 'path';
+import { constants } from 'fs';
 
 // ============================================================================
 // Instagram Post URL Scraper - No Login Required!
@@ -45,15 +46,19 @@ async function getPostUrls(username, maxUrls = 12) {
         };
     }
 
-    // Extract post URLs from edges
-    const urls = posts.edges
+    // Extract post URLs from edges and ensure uniqueness
+    const urlSet = new Set();
+    posts.edges
         .slice(0, maxUrls)
-        .map(edge => {
+        .forEach(edge => {
             const shortcode = edge.node.shortcode;
-            return `https://www.instagram.com/p/${shortcode}/`;
+            const url = `https://www.instagram.com/p/${shortcode}/`;
+            urlSet.add(url);
         });
     
-    console.log(`✅ Found ${urls.length} post URLs`);
+    const urls = Array.from(urlSet);
+    
+    console.log(`✅ Found ${urls.length} unique post URLs`);
     console.log(`   📋 Sample: ${urls.slice(0, 3).join(', ')}`);
     
     const ownerInfo = user;
@@ -73,15 +78,56 @@ async function getPostUrls(username, maxUrls = 12) {
     };
 }
 
+async function loadExistingUrls(filePath) {
+    try {
+        await access(filePath, constants.F_OK);
+        const content = await readFile(filePath, 'utf-8');
+        return JSON.parse(content);
+    } catch (error) {
+        return null; // File doesn't exist
+    }
+}
+
 async function saveUrls(result, filename = null) {
     const urlsDir = join(process.cwd(), 'post-urls');
     await mkdir(urlsDir, { recursive: true });
 
-    const outputFileName = filename || `urls_${result.username}_${Date.now()}.json`;
+    // Use consistent filename without timestamp
+    const outputFileName = filename || `urls_${result.username}.json`;
     const outputPath = join(urlsDir, outputFileName);
     
+    // Load existing data if file exists
+    const existing = await loadExistingUrls(outputPath);
+    
+    if (existing) {
+        console.log(`\n📂 Found existing file with ${existing.post_urls.length} URLs`);
+        
+        // Merge URLs and deduplicate
+        const allUrls = new Set([...existing.post_urls, ...result.post_urls]);
+        const mergedUrls = Array.from(allUrls);
+        
+        const newCount = mergedUrls.length - existing.post_urls.length;
+        
+        if (newCount > 0) {
+            console.log(`   ➕ Adding ${newCount} new unique URL(s)`);
+            console.log(`   📊 Total unique URLs: ${mergedUrls.length}`);
+        } else {
+            console.log(`   ℹ️  No new URLs found (all already existed)`);
+        }
+        
+        // Update result with merged data
+        result.post_urls = mergedUrls;
+        result.total_found = mergedUrls.length;
+        result.last_updated = new Date().toISOString();
+        result.first_scraped = existing.scraped_at || existing.first_scraped;
+    } else {
+        console.log(`\n📝 Creating new file`);
+        result.first_scraped = result.scraped_at;
+        result.last_updated = result.scraped_at;
+    }
+    
     await writeFile(outputPath, JSON.stringify(result, null, 2));
-    console.log(`\n💾 Saved: ${outputPath}`);
+    console.log(`💾 Saved: ${outputPath}`);
     return outputPath;
 }
 

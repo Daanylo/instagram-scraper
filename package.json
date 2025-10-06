@@ -8,7 +8,9 @@
     "profile": "node scrape_profile.js",
     "urls": "node scrape_urls.js",
     "posts": "node scrape_posts.js",
-    "comments": "node scrape_comments.js"
+    "comments": "node scrape_comments.js",
+    "pipeline": "node scrape_pipeline.js",
+    "scrape": "node scrape_pipeline.js"
   },
   "keywords": ["instagram", "scraper", "puppeteer", "social-media", "data-extraction"],
   "author": "",

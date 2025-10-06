@@ -1,6 +1,7 @@
 import puppeteer from 'puppeteer';
-import { writeFile, mkdir, readFile } from 'fs/promises';
+import { writeFile, mkdir, readFile, access } from 'fs/promises';
 import { join } from 'path';
+import { constants } from 'fs';
 
 // Helper function to wait/delay
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -98,7 +99,14 @@ async function scrapePost(page, postUrl) {
 
 async function scrapePosts(urls, options = {}) {
     const { delay = 3000, headless = true } = options;
-    console.log(`\n⟏ Scraping ${urls.length} posts...`);
+    
+    // Remove duplicate URLs before scraping
+    const uniqueUrls = [...new Set(urls)];
+    if (uniqueUrls.length < urls.length) {
+        console.log(`ℹ️  Removed ${urls.length - uniqueUrls.length} duplicate URL(s)`);
+    }
+    
+    console.log(`\n⟏ Scraping ${uniqueUrls.length} unique posts...`);
     console.log('🚀 Launching browser...');
     
     const browser = await puppeteer.launch({
@@ -111,21 +119,30 @@ async function scrapePosts(urls, options = {}) {
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     const results = [];
+    const seenShortcodes = new Set(); // Track shortcodes to prevent duplicates
     const errors = [];
     
     try {
-        for (let i = 0; i < urls.length; i++) {
+        for (let i = 0; i < uniqueUrls.length; i++) {
             try {
-                const postData = await scrapePost(page, urls[i]);
+                const postData = await scrapePost(page, uniqueUrls[i]);
+                
+                // Check for duplicate shortcode
+                if (seenShortcodes.has(postData.shortcode)) {
+                    console.log(`   ⚠️  Skipping duplicate post: ${postData.shortcode}`);
+                    continue;
+                }
+                
+                seenShortcodes.add(postData.shortcode);
                 results.push(postData);
                 
-                if (i < urls.length - 1) {
+                if (i < uniqueUrls.length - 1) {
                     console.log(`   ⏳ Waiting ${delay}ms...`);
                     await wait(delay);
                 }
             } catch (error) {
                 console.error(`   ❌ Error: ${error.message}`);
-                errors.push({ url: urls[i], error: error.message });
+                errors.push({ url: uniqueUrls[i], error: error.message });
             }
         }
     } finally {
@@ -148,12 +165,88 @@ async function loadUrlsFromFile(filePath) {
     return { urls: data.post_urls, username: data.username };
 }
 
+async function loadExistingPosts(filePath) {
+    try {
+        await access(filePath, constants.F_OK);
+        const content = await readFile(filePath, 'utf-8');
+        return JSON.parse(content);
+    } catch (error) {
+        return null; // File doesn't exist
+    }
+}
+
 async function savePosts(result, username) {
     const postsDir = join(process.cwd(), 'posts');
     await mkdir(postsDir, { recursive: true });
-    const outputPath = join(postsDir, `posts_${username}_${Date.now()}.json`);
+    
+    // Use consistent filename without timestamp
+    const outputPath = join(postsDir, `posts_${username}.json`);
+    
+    // Load existing data if file exists
+    const existing = await loadExistingPosts(outputPath);
+    
+    if (existing) {
+        console.log(`\n📂 Found existing file with ${existing.posts.length} posts`);
+        
+        // Merge posts and deduplicate by shortcode
+        const allPostsMap = new Map();
+        
+        // Add existing posts
+        existing.posts.forEach(post => {
+            if (post.shortcode) {
+                allPostsMap.set(post.shortcode, post);
+            }
+        });
+        
+        // Add/update with new posts
+        let newCount = 0;
+        let updatedCount = 0;
+        result.posts.forEach(post => {
+            if (post.shortcode) {
+                if (allPostsMap.has(post.shortcode)) {
+                    // Post exists, update it
+                    allPostsMap.set(post.shortcode, post);
+                    updatedCount++;
+                } else {
+                    // New post
+                    allPostsMap.set(post.shortcode, post);
+                    newCount++;
+                }
+            }
+        });
+        
+        const mergedPosts = Array.from(allPostsMap.values());
+        
+        if (newCount > 0) {
+            console.log(`   ➕ Added ${newCount} new post(s)`);
+        }
+        if (updatedCount > 0) {
+            console.log(`   🔄 Updated ${updatedCount} existing post(s)`);
+        }
+        if (newCount === 0 && updatedCount === 0) {
+            console.log(`   ℹ️  No new posts found (all already existed)`);
+        }
+        console.log(`   📊 Total unique posts: ${mergedPosts.length}`);
+        
+        // Update result with merged data
+        result.posts = mergedPosts;
+        result.total_scraped = mergedPosts.length;
+        
+        // Merge errors (keep unique)
+        const allErrors = [...(existing.errors || []), ...(result.errors || [])];
+        result.errors = allErrors;
+        result.total_errors = allErrors.length;
+        
+        result.last_updated = new Date().toISOString();
+        result.first_scraped = existing.scraped_at || existing.first_scraped;
+    } else {
+        console.log(`\n📝 Creating new posts file`);
+        result.first_scraped = result.scraped_at;
+        result.last_updated = result.scraped_at;
+    }
+    
     await writeFile(outputPath, JSON.stringify(result, null, 2));
-    console.log(`\n💾 Saved: ${outputPath}`);
+    console.log(`💾 Saved: ${outputPath}`);
 }
 
 const args = process.argv.slice(2);
