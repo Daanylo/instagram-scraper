@@ -2,23 +2,20 @@
   "name": "instagram-scraper",
   "version": "1.0.0",
   "type": "module",
-  "main": "scrape_comments.js",
+  "description": "Complete Instagram scraper with Puppeteer - extract profiles, posts, comments, and engagement data",
+  "main": "scrape_posts.js",
   "scripts": {
-    "scrape-comments": "node scrape_comments.js",
-    "scrape-profile": "node scrape_profile.js", 
-    "scrape-posts": "node scrape_posts.js",
-    "scrape-urls": "node scrape_urls.js",
-    "comments": "npm run scrape-comments",
-    "profile": "npm run scrape-profile", 
-    "posts": "npm run scrape-posts",
-    "urls": "npm run scrape-urls",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "profile": "node scrape_profile.js",
+    "urls": "node scrape_urls.js",
+    "posts": "node scrape_posts.js",
+    "comments": "node scrape_comments.js"
   },
+  "keywords": ["instagram", "scraper", "puppeteer", "social-media", "data-extraction"],
   "author": "",
   "license": "ISC",
-  "description": "",
   "dependencies": {
     "dotenv": "^17.2.3",
-    "node-fetch": "^3.3.2"
+    "node-fetch": "^3.3.2",
+    "puppeteer": "^24.23.0"
   }
 }
