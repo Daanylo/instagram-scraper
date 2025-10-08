@@ -163,6 +163,23 @@ async function runPipeline(username, options = {}) {
         }
     }
 
+    console.log('\n' + '▶'.repeat(70));
+    console.log('STEP 5/5: DATABASE IMPORT');
+    console.log('▶'.repeat(70));
+
+    console.log(`\n💾 Importing all data to database...`);
+    
+    const dbSuccess = runCommand(
+        `node import_to_db.js ${username}`,
+        'Import all scraped data to MySQL database'
+    );
+
+    if (dbSuccess) {
+        console.log(`\n✅ Database import completed`);
+    } else {
+        console.log(`\n⚠️  Database import had some issues (data still saved in JSON files)`);
+    }
+
     const endTime = Date.now();
     const duration = Math.round((endTime - startTime) / 1000);
 
@@ -224,9 +241,11 @@ Pipeline Steps:
   2. 🔗 Scrape post URLs (Puppeteer with auth)
   3. 📸 Scrape detailed post data (Puppeteer)
   4. 💬 Scrape comments from all posts (API batch mode with auth)
+  5. 💾 Import all data to MySQL database
 
 All data is saved to respective folders with single-file deduplication.
 Note: Requires SESSION variable in .env file for authentication.
+Database: localhost:3306 (user: remote, password: remote, db: psv_dev)
 `);
     process.exit(0);
 }
