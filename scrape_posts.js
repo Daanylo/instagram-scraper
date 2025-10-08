@@ -7,8 +7,8 @@ const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function scrapePost(page, postUrl) {
     console.log(`\n📸 Scraping: ${postUrl}`);
-    await page.goto(postUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-    await wait(3000);
+    await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    await wait(8000);
     
     const postData = await page.evaluate(() => {
         function extractHashtags(text) {

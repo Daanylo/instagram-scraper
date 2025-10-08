@@ -14,15 +14,81 @@ function randomDelay(min = 1000, max = 3000) {
     return sleep(min + Math.random() * (max - min));
 }
 
+async function scrollAndLoadPosts(page, selector, untilPostId, untilDate, verbose) {
+    const collectedUrls = new Set();
+    let previousCount = 0;
+    let stableCount = 0;
+    const maxScrollAttempts = 200;
+    let scrollAttempts = 0;
+    let foundTarget = false;
+
+    while (scrollAttempts < maxScrollAttempts && !foundTarget) {
+        const posts = await page.$$(selector);
+        const currentCount = posts.length;
+
+        for (let i = 0; i < posts.length; i++) {
+            try {
+                const href = await posts[i].evaluate(el => el.href);
+                if (href && href.includes('/p/')) {
+                    const shortcode = href.match(/\/p\/([^\/]+)\//)?.[1];
+                    if (shortcode) {
+                        const wasNew = !collectedUrls.has(shortcode);
+                        collectedUrls.add(shortcode);
+                        
+                        if (untilPostId && shortcode === untilPostId) {
+                            if (verbose) console.log(`   ✓ Found target post: ${untilPostId}`);
+                            foundTarget = true;
+                            break;
+                        }
+                    }
+                }
+            } catch (e) {}
+        }
+
+        if (foundTarget) break;
+
+        if (currentCount === previousCount) {
+            stableCount++;
+            if (stableCount >= 5) {
+                if (verbose) console.log(`   ℹ️  No more posts loading (reached end after ${scrollAttempts} scrolls)`);
+                break;
+            }
+        } else {
+            stableCount = 0;
+        }
+
+        if (verbose && scrollAttempts % 5 === 0) {
+            console.log(`   📊 Collected ${collectedUrls.size} unique posts (${currentCount} visible in DOM)...`);
+        }
+
+        previousCount = currentCount;
+        await page.evaluate(() => {
+            window.scrollTo(0, document.body.scrollHeight);
+        });
+        await randomDelay(2000, 3000);
+        scrollAttempts++;
+    }
+
+    if (verbose) {
+        console.log(`   ✅ Finished scrolling. Collected ${collectedUrls.size} total unique posts`);
+    }
+
+    return Array.from(collectedUrls);
+}
+
 async function getPostUrls(username, maxUrls = 12, options = {}) {
     const {
         headless = true,
         slowMo = 100,
-        verbose = true
+        verbose = true,
+        untilPostId = null,
+        untilDate = null
     } = options;
 
     console.log(`\n🔍 Getting post URLs from: @${username}`);
     console.log(`🎯 Target: Up to ${maxUrls} recent post URLs`);
+    if (untilPostId) console.log(`🎯 Until post: ${untilPostId}`);
+    if (untilDate) console.log(`🎯 Until date: ${untilDate}`);
     console.log(`🤖 Mode: ${headless ? 'Headless' : 'Visible'} Browser\n`);
 
     let browser;
@@ -114,8 +180,6 @@ async function getPostUrls(username, maxUrls = 12, options = {}) {
         }
 
         await randomDelay(2000, 3000);
-        await page.evaluate(() => window.scrollBy(0, 300));
-        await randomDelay(1500, 2000);
 
         if (verbose) console.log('⏳ Waiting for posts to appear...');
         
@@ -126,15 +190,14 @@ async function getPostUrls(username, maxUrls = 12, options = {}) {
             '[class*="post"] a[href*="/p/"]'
         ];
 
-        let posts = [];
         let workingSelector = null;
         for (const selector of postSelectors) {
             try {
                 await page.waitForSelector(selector, { timeout: 10000 });
-                posts = await page.$$(selector);
-                if (posts.length > 0) {
+                const testPosts = await page.$$(selector);
+                if (testPosts.length > 0) {
                     workingSelector = selector;
-                    if (verbose) console.log(`   ✓ Found ${posts.length} post elements using selector: ${selector}`);
+                    if (verbose) console.log(`   ✓ Found initial posts using selector: ${selector}`);
                     break;
                 }
             } catch (e) {
@@ -142,62 +205,51 @@ async function getPostUrls(username, maxUrls = 12, options = {}) {
             }
         }
 
-        const pageDataUrls = await extractDataFromPage(page, verbose);
-        
-        if (posts.length === 0 && pageDataUrls.post_urls.length === 0) {
+        if (!workingSelector) {
             console.log('⚠️  No posts found on the page');
-            console.log('   This could mean:');
-            console.log('   - The account is private');
-            console.log('   - Instagram changed their HTML structure');
-            console.log('   - The account has no posts');
-            console.log('   - Instagram detected automation');
-            
             await browser.close();
-            
             return {
                 username,
                 post_urls: [],
                 total_found: 0,
-                note: 'No posts found - account may be private or page structure changed',
+                note: 'No posts found',
                 scraped_at: new Date().toISOString()
             };
         }
-        
-        if (posts.length === 0 && pageDataUrls.post_urls.length > 0) {
-            if (verbose) console.log(`   ✓ Using ${pageDataUrls.post_urls.length} posts from page JSON data`);
-            posts = [];
-        }
 
-        if (workingSelector) {
-            posts = await page.$$(workingSelector);
-            if (verbose && posts.length > 0) {
-                console.log(`   🔄 Re-queried: Found ${posts.length} total post elements after scrolling`);
+        let collectedShortcodes = [];
+        
+        if (untilPostId || untilDate) {
+            if (verbose) console.log('📜 Scrolling to load older posts and extracting URLs...');
+            collectedShortcodes = await scrollAndLoadPosts(page, workingSelector, untilPostId, untilDate, verbose);
+        } else {
+            await page.evaluate(() => window.scrollBy(0, 300));
+            await randomDelay(1500, 2000);
+            
+            const posts = await page.$$(workingSelector);
+            if (verbose) console.log(`🔗 Extracting URLs from ${posts.length} post elements...`);
+            
+            const maxToExtract = Math.min(posts.length, maxUrls * 4);
+            
+            for (let i = 0; i < maxToExtract; i++) {
+                try {
+                    const href = await posts[i].evaluate(el => el.href);
+                    if (href && href.includes('/p/')) {
+                        const shortcode = href.match(/\/p\/([^\/]+)\//)?.[1];
+                        if (shortcode) {
+                            collectedShortcodes.push(shortcode);
+                        }
+                    }
+                } catch (e) {}
             }
         }
         
-        if (verbose) console.log(`🔗 Extracting URLs from ${posts.length} post elements...`);
-        
-        const postUrls = new Set();
-        const allFoundUrls = [];
-        
-        for (let i = 0; i < Math.min(posts.length, maxUrls * 4); i++) {
-            try {
-                const href = await posts[i].evaluate(el => el.href);
-                if (href && href.includes('/p/')) {
-                    const cleanUrl = href.endsWith('/') ? href : href + '/';
-                    const shortcode = cleanUrl.match(/\/p\/([^\/]+)\//)?.[1];
-                    allFoundUrls.push(shortcode);
-                    postUrls.add(cleanUrl);
-                }
-            } catch (e) {}
-        }
-        
-        if (verbose && allFoundUrls.length > 0) {
-            console.log(`   📝 Found shortcodes: ${allFoundUrls.slice(0, 5).join(', ')}${allFoundUrls.length > 5 ? '...' : ''}`);
+        if (verbose && collectedShortcodes.length > 0) {
+            console.log(`   📝 Total shortcodes extracted: ${collectedShortcodes.length}`);
+            console.log(`   📝 Sample: ${collectedShortcodes.slice(0, 3).join(', ')}${collectedShortcodes.length > 3 ? '...' : ''}`);
         }
 
-        pageDataUrls.post_urls.forEach(url => postUrls.add(url));
-        
+        const postUrls = new Set(collectedShortcodes.map(code => `https://www.instagram.com/p/${code}/`));
         const sortedUrls = Array.from(postUrls).sort((a, b) => {
             const codeA = a.match(/\/p\/([^\/]+)\//)?.[1] || '';
             const codeB = b.match(/\/p\/([^\/]+)\//)?.[1] || '';
@@ -371,16 +423,35 @@ async function saveUrls(result, filename = null) {
 
 const args = process.argv.slice(2);
 const username = args[0];
-const count = args[1] ? parseInt(args[1]) : 12;
+let count = args[1] ? parseInt(args[1]) : 12;
 const headlessFlag = !args.includes('--visible');
 
+let untilPostId = null;
+let untilDate = null;
+
+const untilIndex = args.indexOf('--until');
+if (untilIndex !== -1 && args[untilIndex + 1]) {
+    untilPostId = args[untilIndex + 1];
+    count = 999999;
+}
+
+const dateIndex = args.indexOf('--until-date');
+if (dateIndex !== -1 && args[dateIndex + 1]) {
+    untilDate = args[dateIndex + 1];
+    count = 999999;
+}
+
 if (!username) {
-    console.error('❌ Usage: node scrape_urls_puppeteer.js <username> [count] [--visible]');
-    console.error('   Example: node scrape_urls_puppeteer.js instagram 12');
-    console.error('   Example: node scrape_urls_puppeteer.js instagram 12 --visible');
+    console.error('❌ Usage: node scrape_urls.js <username> [count] [--visible] [--until POST_ID] [--until-date DATE]');
+    console.error('   Example: node scrape_urls.js instagram 12');
+    console.error('   Example: node scrape_urls.js instagram 12 --visible');
+    console.error('   Example: node scrape_urls.js psv --until DMfBK5xMG_i');
+    console.error('   Example: node scrape_urls.js psv --until-date 2025-07-24');
     console.error('');
     console.error('   Options:');
-    console.error('     --visible    Show browser window (useful for debugging)');
+    console.error('     --visible         Show browser window (useful for debugging)');
+    console.error('     --until POST_ID   Scrape until reaching specific post shortcode');
+    console.error('     --until-date DATE Scrape until reaching specific date (YYYY-MM-DD)');
     process.exit(1);
 }
 
@@ -392,7 +463,9 @@ console.log('╚═════════════════════�
 getPostUrls(username, count, { 
     headless: headlessFlag,
     slowMo: 50,
-    verbose: true 
+    verbose: true,
+    untilPostId: untilPostId,
+    untilDate: untilDate
 })
     .then(async (result) => {
         console.log('\n' + '='.repeat(60));
