@@ -2,11 +2,6 @@ import { execSync } from 'child_process';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
 
-// ============================================================================
-// Instagram Scraping Pipeline
-// Orchestrates: Profile → URLs → Posts → Comments
-// ============================================================================
-
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 function runCommand(command, description) {
@@ -68,9 +63,6 @@ async function runPipeline(username, options = {}) {
         comments: []
     };
 
-    // ========================================================================
-    // STEP 1: Scrape Profile
-    // ========================================================================
     console.log('\n' + '▶'.repeat(70));
     console.log('STEP 1/4: PROFILE SCRAPING');
     console.log('▶'.repeat(70));
@@ -87,7 +79,6 @@ async function runPipeline(username, options = {}) {
 
     await wait(stepDelay);
 
-    // Load profile results
     const profilePath = join(process.cwd(), 'profiles', `profile_${username}.json`);
     results.profile = await loadJsonFile(profilePath);
     
@@ -97,16 +88,13 @@ async function runPipeline(username, options = {}) {
         console.log(`   - Posts fetched: ${results.profile.totalPostsFetched}`);
     }
 
-    // ========================================================================
-    // STEP 2: Scrape Post URLs
-    // ========================================================================
     console.log('\n' + '▶'.repeat(70));
-    console.log('STEP 2/4: POST URL SCRAPING');
+    console.log('STEP 2/4: POST URL SCRAPING (Puppeteer)');
     console.log('▶'.repeat(70));
 
     const urlsSuccess = runCommand(
         `node scrape_urls.js ${username} ${maxUrls}`,
-        'Scrape post URLs'
+        'Scrape post URLs using browser automation'
     );
 
     if (!urlsSuccess) {
@@ -116,7 +104,6 @@ async function runPipeline(username, options = {}) {
 
     await wait(stepDelay);
 
-    // Load URLs
     const urlsPath = join(process.cwd(), 'post-urls', `urls_${username}.json`);
     results.urls = await loadJsonFile(urlsPath);
 
@@ -128,16 +115,13 @@ async function runPipeline(username, options = {}) {
     console.log(`\n📊 URLs Summary:`);
     console.log(`   - Total URLs: ${results.urls.post_urls.length}`);
 
-    // ========================================================================
-    // STEP 3: Scrape Posts
-    // ========================================================================
     console.log('\n' + '▶'.repeat(70));
-    console.log('STEP 3/4: POST SCRAPING');
+    console.log('STEP 3/4: POST SCRAPING (Puppeteer)');
     console.log('▶'.repeat(70));
 
     const postsSuccess = runCommand(
         `node scrape_posts.js ${urlsPath} ${postDelay}`,
-        'Scrape detailed post information'
+        'Scrape detailed post information using browser automation'
     );
 
     if (!postsSuccess) {
@@ -147,7 +131,6 @@ async function runPipeline(username, options = {}) {
 
     await wait(stepDelay);
 
-    // Load posts
     const postsPath = join(process.cwd(), 'posts', `posts_${username}.json`);
     results.posts = await loadJsonFile(postsPath);
 
@@ -157,53 +140,29 @@ async function runPipeline(username, options = {}) {
         console.log(`   - Errors: ${results.posts.total_errors}`);
     }
 
-    // ========================================================================
-    // STEP 4: Scrape Comments
-    // ========================================================================
     console.log('\n' + '▶'.repeat(70));
-    console.log('STEP 4/4: COMMENT SCRAPING');
+    console.log('STEP 4/4: COMMENT SCRAPING (Batch Mode)');
     console.log('▶'.repeat(70));
 
     if (!results.urls || results.urls.post_urls.length === 0) {
         console.log('\n⚠️  No URLs available for comment scraping');
     } else {
-        console.log(`\n📝 Scraping comments from ${results.urls.post_urls.length} posts...`);
+        console.log(`\n📝 Scraping comments from ${results.urls.post_urls.length} posts in batch mode...`);
         
-        let commentSuccessCount = 0;
-        let commentFailCount = 0;
+        const commentsSuccess = runCommand(
+            `node scrape_comments.js ${urlsPath} ${maxComments}`,
+            'Scrape comments from all posts using authenticated API'
+        );
 
-        for (let i = 0; i < results.urls.post_urls.length; i++) {
-            const url = results.urls.post_urls[i];
-            console.log(`\n[${i + 1}/${results.urls.post_urls.length}] ${url}`);
-
-            const success = runCommand(
-                `node scrape_comments.js ${url} ${maxComments}`,
-                `Scrape comments from post ${i + 1}`
-            );
-
-            if (success) {
-                commentSuccessCount++;
-                results.comments.push({ url, status: 'success' });
-            } else {
-                commentFailCount++;
-                results.comments.push({ url, status: 'failed' });
-            }
-
-            // Delay between comment scraping
-            if (i < results.urls.post_urls.length - 1) {
-                console.log(`\n⏳ Waiting ${stepDelay}ms before next post...`);
-                await wait(stepDelay);
-            }
+        if (commentsSuccess) {
+            console.log(`\n✅ Batch comment scraping completed`);
+            results.comments.push({ status: 'success', posts: results.urls.post_urls.length });
+        } else {
+            console.log(`\n⚠️  Batch comment scraping had some issues`);
+            results.comments.push({ status: 'partial', posts: results.urls.post_urls.length });
         }
-
-        console.log(`\n📊 Comments Summary:`);
-        console.log(`   - Successfully scraped: ${commentSuccessCount} posts`);
-        console.log(`   - Failed: ${commentFailCount} posts`);
     }
 
-    // ========================================================================
-    // PIPELINE COMPLETE
-    // ========================================================================
     const endTime = Date.now();
     const duration = Math.round((endTime - startTime) / 1000);
 
@@ -228,14 +187,12 @@ async function runPipeline(username, options = {}) {
     if (results.posts) {
         console.log(`   - Posts scraped: ${results.posts.total_scraped}`);
     }
-    console.log(`   - Comment files created: ${results.comments.filter(c => c.status === 'success').length}`);
+    if (results.comments.length > 0 && results.comments[0].posts) {
+        console.log(`   - Comment scraping: ${results.comments[0].status} (${results.comments[0].posts} posts)`);
+    }
 
     console.log('\n🎉 All data collected successfully!\n');
 }
-
-// ============================================================================
-// Main
-// ============================================================================
 
 const args = process.argv.slice(2);
 
@@ -263,12 +220,13 @@ Examples:
   node scrape_pipeline.js brand_account --max-posts 100 --post-delay 5000
 
 Pipeline Steps:
-  1. 📊 Scrape profile information and posts
-  2. 🔗 Scrape post URLs
-  3. 📸 Scrape detailed post data
-  4. 💬 Scrape comments from all posts
+  1. 📊 Scrape profile information and posts (API with auth)
+  2. 🔗 Scrape post URLs (Puppeteer with auth)
+  3. 📸 Scrape detailed post data (Puppeteer)
+  4. 💬 Scrape comments from all posts (API batch mode with auth)
 
 All data is saved to respective folders with single-file deduplication.
+Note: Requires SESSION variable in .env file for authentication.
 `);
     process.exit(0);
 }
@@ -276,7 +234,6 @@ All data is saved to respective folders with single-file deduplication.
 const username = args[0];
 const options = {};
 
-// Parse command line options
 for (let i = 1; i < args.length; i++) {
     switch (args[i]) {
         case '--max-urls':
@@ -297,7 +254,6 @@ for (let i = 1; i < args.length; i++) {
     }
 }
 
-// Run the pipeline
 runPipeline(username, options)
     .catch(error => {
         console.error('\n💥 Pipeline error:', error);

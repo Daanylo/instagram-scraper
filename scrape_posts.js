@@ -3,13 +3,12 @@ import { writeFile, mkdir, readFile, access } from 'fs/promises';
 import { join } from 'path';
 import { constants } from 'fs';
 
-// Helper function to wait/delay
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function scrapePost(page, postUrl) {
     console.log(`\n📸 Scraping: ${postUrl}`);
     await page.goto(postUrl, { waitUntil: 'networkidle2', timeout: 30000 });
-    await wait(3000); // Wait longer for dynamic content
+    await wait(3000);
     
     const postData = await page.evaluate(() => {
         function extractHashtags(text) {

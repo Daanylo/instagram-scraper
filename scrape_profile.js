@@ -4,19 +4,11 @@ import { join, isAbsolute, basename } from 'path';
 import { constants } from 'fs';
 import 'dotenv/config';
 
-// ============================================================================
-// Configuration
-// ============================================================================
-
 const SESSION = process.env.SESSION;
 
 if (!SESSION) {
     throw new Error('SESSION environment variable is required in .env file');
 }
-
-// ============================================================================
-// Utilities
-// ============================================================================
 
 function extractUsername(profileUrl) {
     const match = profileUrl.match(/instagram\.com\/([^\/\?]+)/);
@@ -68,12 +60,7 @@ function parseProfile(userData) {
     };
 }
 
-// ============================================================================
-// API Functions
-// ============================================================================
-
 async function fetchProfileInfo(username) {
-    // Use GraphQL directly to fetch user info
     const url = `https://www.instagram.com/api/v1/users/web_profile_info/?username=${username}`;
     
     const response = await fetch(url, {
@@ -382,13 +369,19 @@ async function saveProfile(result, filename = null) {
     return outputPath;
 }
 
-// ============================================================================
-// Main
-// ============================================================================
+const args = process.argv.slice(2);
+const username = args[0];
+const maxPosts = args[1] ? parseInt(args[1]) : 50;
 
-const PROFILE_URL = 'https://www.instagram.com/psv/'; // Change this to the profile you want to scrape
+if (!username) {
+    console.error('❌ Usage: node scrape_profile.js <username> [max_posts]');
+    console.error('   Example: node scrape_profile.js psv 50');
+    process.exit(1);
+}
 
-scrapeProfile(PROFILE_URL, 50, 24)
+const PROFILE_URL = `https://www.instagram.com/${username}/`;
+
+scrapeProfile(PROFILE_URL, maxPosts, 24)
     .then(async (result) => {
         console.log('\n' + '='.repeat(60));
         console.log('📈 PROFILE SUMMARY');

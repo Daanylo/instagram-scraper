@@ -4,20 +4,12 @@ import { join, isAbsolute, basename } from 'path';
 import { constants } from 'fs';
 import 'dotenv/config';
 
-// ============================================================================
-// Configuration
-// ============================================================================
-
 const SESSION = process.env.SESSION;
 const COMMENTS_QUERY_HASH = 'bc3296d1ce80a24b1b6e40b1e72903f5';
 
 if (!SESSION) {
     throw new Error('SESSION environment variable is required in .env file');
 }
-
-// ============================================================================
-// Utilities
-// ============================================================================
 
 function extractShortcode(postUrl) {
     const match = postUrl.match(/\/p\/([^\/]+)|\/reel\/([^\/]+)/);
@@ -41,10 +33,6 @@ function parseComment(edge) {
         replies: node.edge_threaded_comments?.count || 0
     };
 }
-
-// ============================================================================
-// API
-// ============================================================================
 
 async function fetchCommentsPage(shortcode, endCursor = '', first = 50) {
     const variables = { shortcode, first, after: endCursor };
@@ -118,9 +106,6 @@ async function scrapeAllComments(postUrl, maxComments = 1000, pageSize = 50) {
             allComments.push(...uniqueComments);
             
             console.log(`   ✓ Fetched ${uniqueComments.length} unique comment(s)`);
-            if (uniqueComments.length < parsed.length) {
-                console.log(`   ℹ️  Filtered out ${parsed.length - uniqueComments.length} duplicate(s)`);
-            }
             
             hasNextPage = result.hasNextPage;
             endCursor = result.endCursor;
@@ -181,31 +166,22 @@ async function saveComments(result, filename = null) {
         : `comments_${result.shortcode}.json`;
 
     const outputPath = join(commentsDir, outputFileName);
-    
-    // Load existing comments if file exists
     const existing = await loadExistingComments(outputPath);
     
     if (existing) {
         console.log(`\n📂 Found existing file with ${existing.length} comments`);
-        
-        // Merge comments and deduplicate by ID
         const allCommentsMap = new Map();
-        
-        // Add existing comments
         existing.forEach(comment => {
             allCommentsMap.set(comment.id, comment);
         });
         
-        // Add/update with new comments
         let newCount = 0;
         let updatedCount = 0;
         result.comments.forEach(comment => {
             if (allCommentsMap.has(comment.id)) {
-                // Comment exists, update it (in case likes changed)
                 allCommentsMap.set(comment.id, comment);
                 updatedCount++;
             } else {
-                // New comment
                 allCommentsMap.set(comment.id, comment);
                 newCount++;
             }
@@ -223,8 +199,6 @@ async function saveComments(result, filename = null) {
             console.log(`   ℹ️  No new comments found`);
         }
         console.log(`   📊 Total unique comments: ${mergedComments.length}`);
-        
-        // Update result with merged data
         result.comments = mergedComments;
         result.totalFetched = mergedComments.length;
     } else {
@@ -236,36 +210,120 @@ async function saveComments(result, filename = null) {
     return outputPath;
 }
 
-// ============================================================================
-// Main
-// ============================================================================
+async function loadPostUrls(filePath) {
+    try {
+        const content = await readFile(filePath, 'utf-8');
+        const data = JSON.parse(content);
+        return data.post_urls || [];
+    } catch (error) {
+        throw new Error(`Failed to load post URLs from ${filePath}: ${error.message}`);
+    }
+}
 
-const POST_URL = process.argv[2] || 'https://www.instagram.com/p/DPeGrDmjA9R';
-const MAX_COMMENTS = parseInt(process.argv[3]) || 1500;
-const DELAY_MS = 30;
-
-scrapeAllComments(POST_URL, MAX_COMMENTS, DELAY_MS)
-    .then(async (result) => {
-        console.log('\n' + '='.repeat(50));
-        console.log('📈 SUMMARY');
-        console.log('='.repeat(50));
-        console.log(`Post: ${result.postUrl}`);
-        console.log(`Available: ${result.totalAvailable || 'unknown'}`);
-        console.log(`Fetched: ${result.totalFetched}`);
-        console.log(`Pages: ${result.pages}`);
+async function scrapeMultiplePosts(postUrls, maxComments = 1500) {
+    console.log(`\n╔═══════════════════════════════════════════════════════════╗`);
+    console.log(`║   Instagram Comments Scraper - Batch Mode                ║`);
+    console.log(`║   Scraping comments from ${String(postUrls.length).padEnd(2)} posts                        ║`);
+    console.log(`╚═══════════════════════════════════════════════════════════╝`);
+    
+    const results = [];
+    
+    for (let i = 0; i < postUrls.length; i++) {
+        const postUrl = postUrls[i];
+        console.log(`\n${'━'.repeat(60)}`);
+        console.log(`📍 Post ${i + 1} of ${postUrls.length}`);
+        console.log(`${'━'.repeat(60)}`);
         
-        if (result.comments.length > 0) {
-            console.log(`\n📝 Sample:`);
-            result.comments.slice(0, 3).forEach((comment, i) => {
-                console.log(`\n${i + 1}. @${comment.owner?.username || 'unknown'}`);
-                console.log(`   ${comment.text?.substring(0, 80) || 'no text'}${comment.text?.length > 80 ? '...' : ''}`);
-                console.log(`   ❤️  ${comment.likes} likes`);
+        try {
+            const result = await scrapeAllComments(postUrl, maxComments, 50);
+            
+            console.log('\n' + '─'.repeat(50));
+            console.log('📈 SUMMARY');
+            console.log('─'.repeat(50));
+            console.log(`Post: ${result.postUrl}`);
+            console.log(`Available: ${result.totalAvailable || 'unknown'}`);
+            console.log(`Fetched: ${result.totalFetched}`);
+            console.log(`Pages: ${result.pages}`);
+            
+            if (result.comments.length > 0) {
+                console.log(`\n📝 Sample:`);
+                result.comments.slice(0, 2).forEach((comment, idx) => {
+                    console.log(`\n${idx + 1}. @${comment.owner?.username || 'unknown'}`);
+                    console.log(`   ${comment.text?.substring(0, 60) || 'no text'}${comment.text?.length > 60 ? '...' : ''}`);
+                    console.log(`   ❤️  ${comment.likes} likes`);
+                });
+                
+                await saveComments(result);
+            }
+            
+            results.push({
+                shortcode: result.shortcode,
+                success: true,
+                comments: result.totalFetched
             });
             
-            await saveComments(result);
+            // Delay between posts to avoid rate limiting
+            if (i < postUrls.length - 1) {
+                console.log(`\n⏳ Waiting 5 seconds before next post...`);
+                await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+            
+        } catch (error) {
+            console.error(`\n❌ Failed to scrape post: ${error.message}`);
+            results.push({
+                shortcode: extractShortcode(postUrl),
+                success: false,
+                error: error.message
+            });
         }
+    }
+    
+    return results;
+}
+
+const args = process.argv.slice(2);
+const urlsFile = args[0];
+const maxComments = parseInt(args[1]) || 1500;
+
+if (!urlsFile) {
+    console.error('❌ Usage: node scrape_comments.js <urls_file.json> [max_comments]');
+    console.error('   Example: node scrape_comments.js post-urls/urls_psv.json 1500');
+    console.error('');
+    console.error('   The URLs file should be a JSON file with a "post_urls" array.');
+    process.exit(1);
+}
+
+loadPostUrls(urlsFile)
+    .then(async (postUrls) => {
+        if (postUrls.length === 0) {
+            console.error('❌ No post URLs found in the file');
+            process.exit(1);
+        }
+        
+        const results = await scrapeMultiplePosts(postUrls, maxComments);
+        
+        console.log('\n\n╔═══════════════════════════════════════════════════════════╗');
+        console.log('║   BATCH SCRAPING COMPLETE                                ║');
+        console.log('╚═══════════════════════════════════════════════════════════╝\n');
+        
+        const successful = results.filter(r => r.success).length;
+        const failed = results.filter(r => !r.success).length;
+        const totalComments = results.reduce((sum, r) => sum + (r.comments || 0), 0);
+        
+        console.log(`✅ Successful: ${successful}/${results.length}`);
+        console.log(`❌ Failed: ${failed}/${results.length}`);
+        console.log(`💬 Total comments: ${totalComments}`);
+        
+        if (failed > 0) {
+            console.log(`\n⚠️  Failed posts:`);
+            results.filter(r => !r.success).forEach(r => {
+                console.log(`   • ${r.shortcode}: ${r.error}`);
+            });
+        }
+        
+        console.log(`\n✅ All done!`);
     })
     .catch(err => {
-        console.error('\n💥 Fatal error:', err);
+        console.error('\n💥 Fatal error:', err.message);
         process.exit(1);
     });
