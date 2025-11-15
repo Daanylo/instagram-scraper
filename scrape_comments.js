@@ -11,6 +11,13 @@ if (!SESSION) {
     throw new Error('SESSION environment variable is required in .env file');
 }
 
+function getHumanDelay(baseDelay) {
+    const variance = 0.3;
+    const minDelay = baseDelay * (1 - variance);
+    const maxDelay = baseDelay * (1 + variance);
+    return Math.floor(minDelay + Math.random() * (maxDelay - minDelay));
+}
+
 function extractShortcode(postUrl) {
     const match = postUrl.match(/\/p\/([^\/]+)|\/reel\/([^\/]+)/);
     if (!match) throw new Error('Invalid Instagram post URL');
@@ -40,12 +47,25 @@ async function fetchCommentsPage(shortcode, endCursor = '', first = 50) {
 
     const response = await fetch(url, {
         headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
             'X-IG-App-ID': '936619743392459',
             'X-Requested-With': 'XMLHttpRequest',
+            'X-ASBD-ID': '129477',
+            'X-IG-WWW-Claim': '0',
+            'DNT': '1',
+            'Connection': 'keep-alive',
             'Cookie': SESSION,
             'Referer': `https://www.instagram.com/p/${shortcode}/`,
-            'Origin': 'https://www.instagram.com'
+            'Origin': 'https://www.instagram.com',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'Sec-Ch-Ua': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+            'Sec-Ch-Ua-Mobile': '?0',
+            'Sec-Ch-Ua-Platform': '"Windows"'
         }
     });
 
@@ -111,8 +131,9 @@ async function scrapeAllComments(postUrl, maxComments = 1000, pageSize = 50) {
             endCursor = result.endCursor;
             
             if (hasNextPage) {
-                console.log(`   ⏳ Waiting 2s...`);
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                const delay = getHumanDelay(2000);
+                console.log(`   ⏳ Waiting ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
         
@@ -264,8 +285,9 @@ async function scrapeMultiplePosts(postUrls, maxComments = 1500) {
             
             // Delay between posts to avoid rate limiting
             if (i < postUrls.length - 1) {
-                console.log(`\n⏳ Waiting 5 seconds before next post...`);
-                await new Promise(resolve => setTimeout(resolve, 5000));
+                const postDelay = getHumanDelay(5000);
+                console.log(`\n⏳ Waiting ${postDelay}ms before next post...`);
+                await new Promise(resolve => setTimeout(resolve, postDelay));
             }
             
         } catch (error) {

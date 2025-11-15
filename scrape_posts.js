@@ -5,6 +5,13 @@ import { constants } from 'fs';
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+function getHumanDelay(baseDelay) {
+    const variance = 0.3;
+    const minDelay = baseDelay * (1 - variance);
+    const maxDelay = baseDelay * (1 + variance);
+    return Math.floor(minDelay + Math.random() * (maxDelay - minDelay));
+}
+
 async function scrapePost(page, postUrl) {
     console.log(`\n📸 Scraping: ${postUrl}`);
     await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
@@ -117,6 +124,27 @@ async function scrapePosts(urls, options = {}) {
     await page.setViewport({ width: 1920, height: 1080 });
     await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
+    await page.setExtraHTTPHeaders({
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0'
+    });
+    
+    await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        window.chrome = { runtime: {} };
+    });
+    
     const results = [];
     const seenShortcodes = new Set(); // Track shortcodes to prevent duplicates
     const errors = [];
@@ -136,8 +164,9 @@ async function scrapePosts(urls, options = {}) {
                 results.push(postData);
                 
                 if (i < uniqueUrls.length - 1) {
-                    console.log(`   ⏳ Waiting ${delay}ms...`);
-                    await wait(delay);
+                    const humanDelay = getHumanDelay(delay);
+                    console.log(`   ⏳ Waiting ${humanDelay}ms...`);
+                    await wait(humanDelay);
                 }
             } catch (error) {
                 console.error(`   ❌ Error: ${error.message}`);
