@@ -4,7 +4,7 @@ import { join } from 'path';
 import 'dotenv/config';
 
 const DB_CONFIG = {
-    host: 'localhost',
+    host: '192.168.150.30',
     port: 3306,
     user: 'remote',
     password: 'remote',
@@ -124,6 +124,7 @@ async function importPosts(connection, postsData) {
             owner_is_private: post.owner?.is_private ? 1 : 0,
             accessibility_caption: post.accessibility_caption || null,
             is_paid_partnership: post.is_paid_partnership ? 1 : 0,
+            tagged_users: post.tagged_users ? JSON.stringify(post.tagged_users) : null,
             from_api: post.from_api ? 1 : 0,
             url: `https://www.instagram.com/p/${post.shortcode}/`
         };
@@ -137,7 +138,7 @@ async function importPosts(connection, postsData) {
                         media_count = ?, location_name = ?, location_address = ?, location_city = ?,
                         location_latitude = ?, location_longitude = ?, owner_username = ?,
                         owner_full_name = ?, owner_is_verified = ?, owner_is_private = ?,
-                        accessibility_caption = ?, is_paid_partnership = ?, url = ?
+                        accessibility_caption = ?, is_paid_partnership = ?, tagged_users = ?, url = ?
                     WHERE shortcode = ?`,
                     [
                         postValues.post_type, postValues.is_reel, postValues.taken_at,
@@ -146,8 +147,8 @@ async function importPosts(connection, postsData) {
                         postValues.location_name, postValues.location_address, postValues.location_city,
                         postValues.location_latitude, postValues.location_longitude, postValues.owner_username,
                         postValues.owner_full_name, postValues.owner_is_verified, postValues.owner_is_private,
-                        postValues.accessibility_caption, postValues.is_paid_partnership, postValues.url,
-                        post.shortcode
+                        postValues.accessibility_caption, postValues.is_paid_partnership, postValues.tagged_users, 
+                        postValues.url, post.shortcode
                     ]
                 );
                 updated++;
@@ -158,8 +159,8 @@ async function importPosts(connection, postsData) {
                         like_count, comment_count, video_view_count, media_count, location_name,
                         location_address, location_city, location_latitude, location_longitude,
                         owner_username, owner_full_name, owner_is_verified, owner_is_private,
-                        accessibility_caption, is_paid_partnership, from_api, url
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        accessibility_caption, is_paid_partnership, tagged_users, from_api, url
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                     [
                         postValues.shortcode, postValues.post_type, postValues.is_reel,
                         postValues.taken_at, postValues.taken_at_timestamp, postValues.caption,
@@ -168,7 +169,7 @@ async function importPosts(connection, postsData) {
                         postValues.location_city, postValues.location_latitude, postValues.location_longitude,
                         postValues.owner_username, postValues.owner_full_name, postValues.owner_is_verified,
                         postValues.owner_is_private, postValues.accessibility_caption,
-                        postValues.is_paid_partnership, postValues.from_api, postValues.url
+                        postValues.is_paid_partnership, postValues.tagged_users, postValues.from_api, postValues.url
                     ]
                 );
                 inserted++;

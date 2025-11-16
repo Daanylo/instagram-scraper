@@ -5,17 +5,44 @@ import { constants } from 'fs';
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-function getHumanDelay(baseDelay) {
-    const variance = 0.3;
+function getHumanDelay(baseDelay = 40000) {
+    const variance = 0.5;
     const minDelay = baseDelay * (1 - variance);
     const maxDelay = baseDelay * (1 + variance);
     return Math.floor(minDelay + Math.random() * (maxDelay - minDelay));
 }
 
-async function scrapePost(page, postUrl) {
+function shouldTakeBreak(postIndex) {
+    const breakInterval = 15 + Math.floor(Math.random() * 10);
+    return postIndex > 0 && postIndex % breakInterval === 0;
+}
+
+function getBreakDuration() {
+    return (3 + Math.random() * 2) * 60 * 1000;
+}
+
+async function scrapePost(page, postUrl, retryCount = 0) {
     console.log(`\n📸 Scraping: ${postUrl}`);
-    await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
-    await wait(8000);
+    
+    const response = await page.goto(postUrl, { waitUntil: 'domcontentloaded', timeout: 90000 });
+    
+    if (response.status() === 429) {
+        throw new Error('RATE_LIMITED');
+    }
+    
+    const loadWait = 3000 + Math.floor(Math.random() * 4000);
+    await wait(loadWait);
+    
+    const isRateLimited = await page.evaluate(() => {
+        const bodyText = document.body.innerText;
+        return bodyText.includes('Please wait a few minutes') || 
+               bodyText.includes('Try again later') ||
+               bodyText.includes('too many requests');
+    });
+    
+    if (isRateLimited) {
+        throw new Error('RATE_LIMITED');
+    };
     
     const postData = await page.evaluate(() => {
         function extractHashtags(text) {
@@ -52,6 +79,45 @@ async function scrapePost(page, postUrl) {
             const isVideo = postInfo.media_type === 2;
             const isCarousel = postInfo.carousel_media_count > 1;
             
+            // Extract tagged users from media
+            function extractTagsFromMedia(media) {
+                const users = [];
+                
+                // Check usertags (photo tags)
+                if (media.usertags && media.usertags.in) {
+                    media.usertags.in.forEach(tag => {
+                        const username = tag.user?.username;
+                        if (username) {
+                            users.push(username);
+                        }
+                    });
+                }
+                
+                return users;
+            }
+            
+            // Build tagged users object
+            const taggedUsers = {};
+            
+            if (isCarousel && postInfo.carousel_media) {
+                // For carousel, collect tags from all children
+                postInfo.carousel_media.forEach((child, idx) => {
+                    const users = extractTagsFromMedia(child);
+                    users.forEach(username => {
+                        if (!taggedUsers[username]) {
+                            taggedUsers[username] = [];
+                        }
+                        taggedUsers[username].push(idx + 1);
+                    });
+                });
+            } else {
+                // For single image/video
+                const users = extractTagsFromMedia(postInfo);
+                users.forEach(username => {
+                    taggedUsers[username] = [1];
+                });
+            }
+            
             return {
                 shortcode: postInfo.code,
                 post_type: postInfo.product_type === 'clips' ? 'reel' :
@@ -83,6 +149,7 @@ async function scrapePost(page, postUrl) {
                 },
                 accessibility_caption: postInfo.accessibility_caption || null,
                 is_paid_partnership: postInfo.is_paid_partnership || false,
+                tagged_users: Object.keys(taggedUsers).length > 0 ? taggedUsers : null,
                 from_api: true
             };
         }
@@ -99,12 +166,24 @@ async function scrapePost(page, postUrl) {
     postData.url = postUrl;
     const likes = postData.like_count ? postData.like_count.toLocaleString() : 'N/A';
     const comments = postData.comment_count ? postData.comment_count.toLocaleString() : 'N/A';
-    console.log(`   ✅ ${postData.post_type?.toUpperCase() || 'POST'} | ❤️  ${likes} | 💬 ${comments}`);
+    const taggedCount = postData.tagged_users ? Object.keys(postData.tagged_users).length : 0;
+    const taggedInfo = taggedCount > 0 ? ` | 👥 ${taggedCount}` : '';
+    console.log(`   ✅ ${postData.post_type?.toUpperCase() || 'POST'} | ❤️  ${likes} | 💬 ${comments}${taggedInfo}`);
     return postData;
 }
 
 async function scrapePosts(urls, options = {}) {
-    const { delay = 3000, headless = true } = options;
+    const { delay = 40000, headless = true } = options;
+    
+    const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0'
+    ];
     
     // Remove duplicate URLs before scraping
     const uniqueUrls = [...new Set(urls)];
@@ -122,7 +201,6 @@ async function scrapePosts(urls, options = {}) {
     
     const page = await browser.newPage();
     await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
     
     await page.setExtraHTTPHeaders({
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -152,6 +230,9 @@ async function scrapePosts(urls, options = {}) {
     try {
         for (let i = 0; i < uniqueUrls.length; i++) {
             try {
+                const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+                await page.setUserAgent(randomUA);
+                
                 const postData = await scrapePost(page, uniqueUrls[i]);
                 
                 // Check for duplicate shortcode
@@ -163,14 +244,30 @@ async function scrapePosts(urls, options = {}) {
                 seenShortcodes.add(postData.shortcode);
                 results.push(postData);
                 
+                if (shouldTakeBreak(i + 1)) {
+                    const breakDuration = getBreakDuration();
+                    console.log(`\n☕ Taking a break (${(breakDuration / 60000).toFixed(1)} minutes) after ${i + 1} posts...`);
+                    await wait(breakDuration);
+                }
+                
                 if (i < uniqueUrls.length - 1) {
                     const humanDelay = getHumanDelay(delay);
-                    console.log(`   ⏳ Waiting ${humanDelay}ms...`);
+                    console.log(`   ⏳ Waiting ${(humanDelay / 1000).toFixed(1)}s...`);
                     await wait(humanDelay);
                 }
             } catch (error) {
-                console.error(`   ❌ Error: ${error.message}`);
-                errors.push({ url: uniqueUrls[i], error: error.message });
+                if (error.message === 'RATE_LIMITED') {
+                    console.error(`\n⚠️  Rate limited! Implementing exponential backoff...`);
+                    const waitTimes = [2, 5, 10];
+                    const retries = Math.min(errors.filter(e => e.error === 'RATE_LIMITED').length, waitTimes.length - 1);
+                    const waitMinutes = waitTimes[retries];
+                    console.log(`   ⏳ Waiting ${waitMinutes} minutes before retry...`);
+                    await wait(waitMinutes * 60 * 1000);
+                    i--;
+                } else {
+                    console.error(`   ❌ Error: ${error.message}`);
+                    errors.push({ url: uniqueUrls[i], error: error.message });
+                }
             }
         }
     } finally {
@@ -284,7 +381,7 @@ if (args.length === 0) {
 }
 
 const inputFile = args[0];
-const delay = args[1] && !args[1].startsWith('--') ? parseInt(args[1]) : 3000;
+const delay = args[1] && !args[1].startsWith('--') ? parseInt(args[1]) : 40000;
 const showBrowser = args.includes('--show-browser');
 
 (async () => {

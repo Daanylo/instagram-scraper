@@ -11,11 +11,20 @@ if (!SESSION) {
     throw new Error('SESSION environment variable is required in .env file');
 }
 
-function getHumanDelay(baseDelay) {
-    const variance = 0.3;
+function getHumanDelay(baseDelay = 40000) {
+    const variance = 0.5;
     const minDelay = baseDelay * (1 - variance);
     const maxDelay = baseDelay * (1 + variance);
     return Math.floor(minDelay + Math.random() * (maxDelay - minDelay));
+}
+
+function shouldTakeBreak(pageIndex) {
+    const breakInterval = 15 + Math.floor(Math.random() * 10);
+    return pageIndex > 0 && pageIndex % breakInterval === 0;
+}
+
+function getBreakDuration() {
+    return (3 + Math.random() * 2) * 60 * 1000;
 }
 
 function extractShortcode(postUrl) {
@@ -42,12 +51,23 @@ function parseComment(edge) {
 }
 
 async function fetchCommentsPage(shortcode, endCursor = '', first = 50) {
+    const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0'
+    ];
+    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+    
     const variables = { shortcode, first, after: endCursor };
     const url = `https://www.instagram.com/graphql/query/?query_hash=${COMMENTS_QUERY_HASH}&variables=${encodeURIComponent(JSON.stringify(variables))}`;
 
     const response = await fetch(url, {
         headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': randomUA,
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
@@ -70,6 +90,9 @@ async function fetchCommentsPage(shortcode, endCursor = '', first = 50) {
     });
 
     if (!response.ok) {
+        if (response.status === 429) {
+            throw new Error('RATE_LIMITED');
+        }
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
@@ -130,9 +153,15 @@ async function scrapeAllComments(postUrl, maxComments = 1000, pageSize = 50) {
             hasNextPage = result.hasNextPage;
             endCursor = result.endCursor;
             
+            if (shouldTakeBreak(pageCount)) {
+                const breakDuration = getBreakDuration();
+                console.log(`\n☕ Taking a break (${(breakDuration / 60000).toFixed(1)} minutes) after ${pageCount} pages...`);
+                await new Promise(resolve => setTimeout(resolve, breakDuration));
+            }
+            
             if (hasNextPage) {
-                const delay = getHumanDelay(2000);
-                console.log(`   ⏳ Waiting ${delay}ms...`);
+                const delay = getHumanDelay();
+                console.log(`   ⏳ Waiting ${(delay / 1000).toFixed(1)}s...`);
                 await new Promise(resolve => setTimeout(resolve, delay));
             }
         }
@@ -283,20 +312,29 @@ async function scrapeMultiplePosts(postUrls, maxComments = 1500) {
                 comments: result.totalFetched
             });
             
-            // Delay between posts to avoid rate limiting
             if (i < postUrls.length - 1) {
-                const postDelay = getHumanDelay(5000);
-                console.log(`\n⏳ Waiting ${postDelay}ms before next post...`);
+                const postDelay = getHumanDelay();
+                console.log(`\n⏳ Waiting ${(postDelay / 1000).toFixed(1)}s before next post...`);
                 await new Promise(resolve => setTimeout(resolve, postDelay));
             }
             
         } catch (error) {
-            console.error(`\n❌ Failed to scrape post: ${error.message}`);
-            results.push({
-                shortcode: extractShortcode(postUrl),
-                success: false,
-                error: error.message
-            });
+            if (error.message === 'RATE_LIMITED') {
+                console.error(`\n⚠️  Rate limited! Implementing exponential backoff...`);
+                const waitTimes = [2, 5, 10];
+                const retries = Math.min(results.filter(r => !r.success && r.error === 'RATE_LIMITED').length, waitTimes.length - 1);
+                const waitMinutes = waitTimes[retries];
+                console.log(`   ⏳ Waiting ${waitMinutes} minutes before retry...`);
+                await new Promise(resolve => setTimeout(resolve, waitMinutes * 60 * 1000));
+                i--;
+            } else {
+                console.error(`\n❌ Failed to scrape post: ${error.message}`);
+                results.push({
+                    shortcode: extractShortcode(postUrl),
+                    success: false,
+                    error: error.message
+                });
+            }
         }
     }
     

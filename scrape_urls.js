@@ -14,6 +14,22 @@ function randomDelay(min = 1000, max = 3000) {
     return sleep(min + Math.random() * (max - min));
 }
 
+function getHumanDelay(baseDelay = 40000) {
+    const variance = 0.5;
+    const minDelay = baseDelay * (1 - variance);
+    const maxDelay = baseDelay * (1 + variance);
+    return Math.floor(minDelay + Math.random() * (maxDelay - minDelay));
+}
+
+function shouldTakeBreak(scrollCount) {
+    const breakInterval = 15 + Math.floor(Math.random() * 10);
+    return scrollCount > 0 && scrollCount % breakInterval === 0;
+}
+
+function getBreakDuration() {
+    return (3 + Math.random() * 2) * 60 * 1000;
+}
+
 async function scrollAndLoadPosts(page, selector, untilPostId, untilDate, verbose) {
     const collectedUrls = new Set();
     let previousCount = 0;
@@ -21,6 +37,16 @@ async function scrollAndLoadPosts(page, selector, untilPostId, untilDate, verbos
     const maxScrollAttempts = 200;
     let scrollAttempts = 0;
     let foundTarget = false;
+    
+    const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0'
+    ];
 
     while (scrollAttempts < maxScrollAttempts && !foundTarget) {
         const posts = await page.$$(selector);
@@ -62,10 +88,22 @@ async function scrollAndLoadPosts(page, selector, untilPostId, untilDate, verbos
         }
 
         previousCount = currentCount;
+        
+        const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+        await page.setUserAgent(randomUA);
+        
         await page.evaluate(() => {
             window.scrollTo(0, document.body.scrollHeight);
         });
-        await randomDelay(2000, 3000);
+        
+        if (shouldTakeBreak(scrollAttempts + 1)) {
+            const breakDuration = getBreakDuration();
+            if (verbose) console.log(`\n☕ Taking a break (${(breakDuration / 60000).toFixed(1)} minutes) after ${scrollAttempts + 1} scrolls...`);
+            await sleep(breakDuration);
+        }
+        
+        const scrollDelay = getHumanDelay(3000);
+        await sleep(scrollDelay);
         scrollAttempts++;
     }
 
@@ -84,6 +122,17 @@ async function getPostUrls(username, maxUrls = 12, options = {}) {
         untilPostId = null,
         untilDate = null
     } = options;
+    
+    const userAgents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0'
+    ];
+    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
 
     console.log(`\n🔍 Getting post URLs from: @${username}`);
     console.log(`🎯 Target: Up to ${maxUrls} recent post URLs`);
@@ -114,9 +163,7 @@ async function getPostUrls(username, maxUrls = 12, options = {}) {
             deviceScaleFactor: 1,
         });
 
-        await page.setUserAgent(
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        );
+        await page.setUserAgent(randomUA);
 
         await page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, 'webdriver', {
