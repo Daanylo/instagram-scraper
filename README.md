@@ -22,30 +22,82 @@ A complete toolkit to scrape Instagram profiles, posts, and comments using brows
 npm install
 ```
 
-## Usage
+## Configuration
 
-### 1. Get Post URLs from a Profile
+Create/update `.env` in the project root.
+
+Required for scraping:
 
 ```bash
-node scrape_urls.js <username> <count>
+SESSION=sessionid=...;ds_user_id=...
+```
+
+Required for database import:
+
+```bash
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=root
+DB_PASSWORD=
+DB_NAME=instagram
+```
+
+## Usage
+
+Tip: when using npm scripts with arguments, use `--`.
+
+### 1. Scrape Profile
+
+```bash
+npm run profile -- <username> [max_posts]
 # Example:
-node scrape_urls.js psv 10
+npm run profile -- psv 50
+```
+
+This saves to `profiles/profile_<username>.json`.
+
+### 2. Get Post URLs from a Profile
+
+```bash
+npm run urls -- <username> [count] [--visible] [--until POST_ID] [--until-date YYYY-MM-DD]
+# Example:
+npm run urls -- psv 25
 ```
 
 This will save URLs to `post-urls/urls_<username>_<timestamp>.json`
 
-### 2. Scrape Post Details
+### 3. Scrape Post Details
 
 ```bash
-node scrape_posts.js <url_file_or_post_url> [delay_ms]
-# Example with URL file:
-node scrape_posts.js ./post-urls/urls_psv_123456.json 2000
-
-# Example with single URL:
-node scrape_posts.js https://www.instagram.com/p/ABC123/ 2000
+npm run posts -- <urls_file.json> [delay_ms] [--show-browser]
+# Example:
+npm run posts -- post-urls/urls_psv.json 40000 --show-browser
 ```
 
-This will save post data to `posts/posts_<username>_<timestamp>.json`
+This saves to `posts/posts_<username>.json`.
+
+### 4. Scrape Comments
+
+```bash
+npm run comments -- <urls_file.json> [max_comments]
+# Example:
+npm run comments -- post-urls/urls_psv.json 1500
+```
+
+This saves per-post files in `comments/`.
+
+### 5. Import Scraped Data into MySQL
+
+```bash
+npm run import -- <username>
+# Example:
+npm run import -- psv
+```
+
+This reads:
+- `profiles/profile_<username>.json`
+- `posts/posts_<username>.json`
+- `comments/comments_*.json`
 
 ## Post Data Extracted
 
@@ -65,7 +117,7 @@ This will save post data to `posts/posts_<username>_<timestamp>.json`
 
 ## Requirements
 
-- Node.js 14+
+- Node.js 18+
 - Puppeteer (for post scraping)
 
 ## Notes

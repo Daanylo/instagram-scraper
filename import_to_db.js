@@ -3,16 +3,37 @@ import { readFile, readdir } from 'fs/promises';
 import { join } from 'path';
 import 'dotenv/config';
 
-const DB_CONFIG = {
-    host: '192.168.150.30',
-    port: 3306,
-    user: 'remote',
-    password: 'remote',
-    database: 'psv_dev'
-};
+function getDbConfig() {
+    const host = process.env.DB_HOST || process.env.MYSQL_HOST;
+    const portRaw = process.env.DB_PORT || process.env.MYSQL_PORT || '3306';
+    const user = process.env.DB_USER || process.env.MYSQL_USER;
+    const password = process.env.DB_PASSWORD ?? process.env.MYSQL_PASSWORD ?? '';
+    const database = process.env.DB_NAME || process.env.MYSQL_DATABASE;
+
+    const missing = [];
+    if (!host) missing.push('DB_HOST');
+    if (!user) missing.push('DB_USER');
+    if (!database) missing.push('DB_NAME');
+    if (missing.length > 0) {
+        throw new Error(`Missing required database environment variables: ${missing.join(', ')}`);
+    }
+
+    const port = Number.parseInt(portRaw, 10);
+    if (!Number.isFinite(port)) {
+        throw new Error('DB_PORT must be a number');
+    }
+
+    return {
+        host,
+        port,
+        user,
+        password,
+        database
+    };
+}
 
 async function getConnection() {
-    return await mysql.createConnection(DB_CONFIG);
+    return await mysql.createConnection(getDbConfig());
 }
 
 async function importProfile(connection, profileData) {

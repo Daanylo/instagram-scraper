@@ -1,5 +1,5 @@
 import puppeteer from 'puppeteer';
-import { writeFile, mkdir, readFile, access } from 'fs/promises';
+import { writeFile, mkdir, readFile, access, rename } from 'fs/promises';
 import { join } from 'path';
 import { constants } from 'fs';
 
@@ -172,8 +172,72 @@ async function scrapePost(page, postUrl, retryCount = 0) {
     return postData;
 }
 
+function parseShortcodeFromUrl(postUrl) {
+    try {
+        const url = new URL(postUrl);
+        const parts = url.pathname.split('/').filter(Boolean);
+        const pIndex = parts.indexOf('p');
+        if (pIndex >= 0 && parts[pIndex + 1]) return parts[pIndex + 1];
+        const reelIndex = parts.indexOf('reel');
+        if (reelIndex >= 0 && parts[reelIndex + 1]) return parts[reelIndex + 1];
+        return null;
+    } catch {
+        const parts = String(postUrl).split('/').filter(Boolean);
+        const pIndex = parts.indexOf('p');
+        if (pIndex >= 0 && parts[pIndex + 1]) return parts[pIndex + 1];
+        const reelIndex = parts.indexOf('reel');
+        if (reelIndex >= 0 && parts[reelIndex + 1]) return parts[reelIndex + 1];
+        return null;
+    }
+}
+
+function isRecoverablePageError(errorMessage) {
+    const msg = String(errorMessage || '').toLowerCase();
+    return (
+        msg.includes('detached frame') ||
+        msg.includes('execution context was destroyed') ||
+        msg.includes('target closed') ||
+        msg.includes('session closed') ||
+        msg.includes('most likely because of a navigation')
+    );
+}
+
+async function writeJsonAtomic(filePath, data) {
+    const tmpPath = `${filePath}.tmp`;
+    await writeFile(tmpPath, JSON.stringify(data, null, 2));
+    await rename(tmpPath, filePath);
+}
+
+async function createConfiguredPage(browser) {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1920, height: 1080 });
+
+    await page.setExtraHTTPHeaders({
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'Cache-Control': 'max-age=0'
+    });
+
+    await page.evaluateOnNewDocument(() => {
+        Object.defineProperty(navigator, 'webdriver', { get: () => false });
+        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+        window.chrome = { runtime: {} };
+    });
+
+    return page;
+}
+
 async function scrapePosts(urls, options = {}) {
-    const { delay = 40000, headless = true } = options;
+    const { delay = 40000, headless = true, username = null, checkpointEvery = 1 } = options;
     
     const userAgents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -191,66 +255,124 @@ async function scrapePosts(urls, options = {}) {
         console.log(`ℹ️  Removed ${urls.length - uniqueUrls.length} duplicate URL(s)`);
     }
     
-    console.log(`\n⟏ Scraping ${uniqueUrls.length} unique posts...`);
+    const postsDir = join(process.cwd(), 'posts');
+    await mkdir(postsDir, { recursive: true });
+    const outputPath = username ? join(postsDir, `posts_${username}.json`) : null;
+
+    const existing = outputPath ? await loadExistingPosts(outputPath) : null;
+    const postsByShortcode = new Map();
+    const existingShortcodes = new Set();
+    const existingErrors = [];
+
+    if (existing?.posts?.length) {
+        for (const post of existing.posts) {
+            if (post?.shortcode) {
+                postsByShortcode.set(post.shortcode, post);
+                existingShortcodes.add(post.shortcode);
+            }
+        }
+    }
+    if (Array.isArray(existing?.errors)) {
+        existingErrors.push(...existing.errors);
+    }
+
+    const remainingUrls = username
+        ? uniqueUrls.filter((u) => {
+            const sc = parseShortcodeFromUrl(u);
+            return !sc || !existingShortcodes.has(sc);
+        })
+        : uniqueUrls;
+
+    if (username && existingShortcodes.size > 0) {
+        console.log(`\n↻ Resume enabled: ${existingShortcodes.size} post(s) already saved`);
+        console.log(`⟏ Scraping ${remainingUrls.length} remaining post(s) (from ${uniqueUrls.length} unique URLs)...`);
+    } else {
+        console.log(`\n⟏ Scraping ${remainingUrls.length} unique posts...`);
+    }
     console.log('🚀 Launching browser...');
     
     const browser = await puppeteer.launch({
         headless: headless,
         args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
-    
-    const page = await browser.newPage();
-    await page.setViewport({ width: 1920, height: 1080 });
-    
-    await page.setExtraHTTPHeaders({
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Sec-Fetch-User': '?1',
-        'Cache-Control': 'max-age=0'
-    });
-    
-    await page.evaluateOnNewDocument(() => {
-        Object.defineProperty(navigator, 'webdriver', { get: () => false });
-        Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-        window.chrome = { runtime: {} };
-    });
-    
-    const results = [];
-    const seenShortcodes = new Set(); // Track shortcodes to prevent duplicates
-    const errors = [];
+
+    let page = await createConfiguredPage(browser);
+    const errors = [...existingErrors];
+
+    const startedAt = existing?.first_scraped || existing?.scraped_at || new Date().toISOString();
+    const result = {
+        posts: [],
+        total_scraped: 0,
+        total_errors: 0,
+        errors: [],
+        scraped_at: startedAt,
+        first_scraped: existing?.first_scraped || existing?.scraped_at || startedAt,
+        last_updated: new Date().toISOString()
+    };
+
+    async function checkpointSave(force = false) {
+        if (!outputPath) return;
+        if (!force && checkpointEvery > 1) {
+            const count = postsByShortcode.size;
+            if (count % checkpointEvery !== 0) return;
+        }
+
+        result.posts = Array.from(postsByShortcode.values());
+        result.total_scraped = result.posts.length;
+        result.errors = errors;
+        result.total_errors = errors.length;
+        result.last_updated = new Date().toISOString();
+        await writeJsonAtomic(outputPath, result);
+    }
     
     try {
-        for (let i = 0; i < uniqueUrls.length; i++) {
+        for (let i = 0; i < remainingUrls.length; i++) {
             try {
                 const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
                 await page.setUserAgent(randomUA);
-                
-                const postData = await scrapePost(page, uniqueUrls[i]);
-                
-                // Check for duplicate shortcode
-                if (seenShortcodes.has(postData.shortcode)) {
-                    console.log(`   ⚠️  Skipping duplicate post: ${postData.shortcode}`);
-                    continue;
+
+                const currentUrl = remainingUrls[i];
+                let postData = null;
+
+                for (let attempt = 0; attempt < 2; attempt++) {
+                    try {
+                        postData = await scrapePost(page, currentUrl);
+                        break;
+                    } catch (e) {
+                        if (e?.message === 'RATE_LIMITED') throw e;
+
+                        if (attempt === 0 && isRecoverablePageError(e?.message)) {
+                            console.log('   🔄 Page context lost; recreating tab and retrying...');
+                            try {
+                                await page.close({ runBeforeUnload: false });
+                            } catch {}
+                            page = await createConfiguredPage(browser);
+                            await page.setUserAgent(randomUA);
+                            continue;
+                        }
+                        throw e;
+                    }
                 }
-                
-                seenShortcodes.add(postData.shortcode);
-                results.push(postData);
+
+                if (!postData) {
+                    throw new Error('UNKNOWN_SCRAPE_FAILURE');
+                }
+
+                if (postData.shortcode && postsByShortcode.has(postData.shortcode)) {
+                    console.log(`   ⚠️  Skipping duplicate post: ${postData.shortcode}`);
+                } else if (postData.shortcode) {
+                    postsByShortcode.set(postData.shortcode, postData);
+                }
+
+                await checkpointSave(false);
                 
                 if (shouldTakeBreak(i + 1)) {
                     const breakDuration = getBreakDuration();
                     console.log(`\n☕ Taking a break (${(breakDuration / 60000).toFixed(1)} minutes) after ${i + 1} posts...`);
                     await wait(breakDuration);
                 }
-                
-                if (i < uniqueUrls.length - 1) {
+
+                if (i < remainingUrls.length - 1) {
                     const humanDelay = getHumanDelay(delay);
                     console.log(`   ⏳ Waiting ${(humanDelay / 1000).toFixed(1)}s...`);
                     await wait(humanDelay);
@@ -266,22 +388,30 @@ async function scrapePosts(urls, options = {}) {
                     i--;
                 } else {
                     console.error(`   ❌ Error: ${error.message}`);
-                    errors.push({ url: uniqueUrls[i], error: error.message });
+                    errors.push({ url: remainingUrls[i], error: error.message });
+                    await checkpointSave(true);
+
+                    if (isRecoverablePageError(error.message)) {
+                        try {
+                            await page.close({ runBeforeUnload: false });
+                        } catch {}
+                        page = await createConfiguredPage(browser);
+                    }
                 }
             }
         }
     } finally {
+        await checkpointSave(true);
         console.log('\n🔒 Closing browser...');
         await browser.close();
     }
-    
-    return {
-        posts: results,
-        total_scraped: results.length,
-        total_errors: errors.length,
-        errors: errors,
-        scraped_at: new Date().toISOString()
-    };
+
+    result.posts = Array.from(postsByShortcode.values());
+    result.total_scraped = result.posts.length;
+    result.total_errors = errors.length;
+    result.errors = errors;
+    result.last_updated = new Date().toISOString();
+    return result;
 }
 
 async function loadUrlsFromFile(filePath) {
@@ -303,74 +433,8 @@ async function loadExistingPosts(filePath) {
 async function savePosts(result, username) {
     const postsDir = join(process.cwd(), 'posts');
     await mkdir(postsDir, { recursive: true });
-    
-    // Use consistent filename without timestamp
     const outputPath = join(postsDir, `posts_${username}.json`);
-    
-    // Load existing data if file exists
-    const existing = await loadExistingPosts(outputPath);
-    
-    if (existing) {
-        console.log(`\n📂 Found existing file with ${existing.posts.length} posts`);
-        
-        // Merge posts and deduplicate by shortcode
-        const allPostsMap = new Map();
-        
-        // Add existing posts
-        existing.posts.forEach(post => {
-            if (post.shortcode) {
-                allPostsMap.set(post.shortcode, post);
-            }
-        });
-        
-        // Add/update with new posts
-        let newCount = 0;
-        let updatedCount = 0;
-        result.posts.forEach(post => {
-            if (post.shortcode) {
-                if (allPostsMap.has(post.shortcode)) {
-                    // Post exists, update it
-                    allPostsMap.set(post.shortcode, post);
-                    updatedCount++;
-                } else {
-                    // New post
-                    allPostsMap.set(post.shortcode, post);
-                    newCount++;
-                }
-            }
-        });
-        
-        const mergedPosts = Array.from(allPostsMap.values());
-        
-        if (newCount > 0) {
-            console.log(`   ➕ Added ${newCount} new post(s)`);
-        }
-        if (updatedCount > 0) {
-            console.log(`   🔄 Updated ${updatedCount} existing post(s)`);
-        }
-        if (newCount === 0 && updatedCount === 0) {
-            console.log(`   ℹ️  No new posts found (all already existed)`);
-        }
-        console.log(`   📊 Total unique posts: ${mergedPosts.length}`);
-        
-        // Update result with merged data
-        result.posts = mergedPosts;
-        result.total_scraped = mergedPosts.length;
-        
-        // Merge errors (keep unique)
-        const allErrors = [...(existing.errors || []), ...(result.errors || [])];
-        result.errors = allErrors;
-        result.total_errors = allErrors.length;
-        
-        result.last_updated = new Date().toISOString();
-        result.first_scraped = existing.scraped_at || existing.first_scraped;
-    } else {
-        console.log(`\n📝 Creating new posts file`);
-        result.first_scraped = result.scraped_at;
-        result.last_updated = result.scraped_at;
-    }
-    
-    await writeFile(outputPath, JSON.stringify(result, null, 2));
+    await writeJsonAtomic(outputPath, result);
     console.log(`💾 Saved: ${outputPath}`);
 }
 
@@ -387,7 +451,7 @@ const showBrowser = args.includes('--show-browser');
 (async () => {
     try {
         const { urls, username } = await loadUrlsFromFile(inputFile);
-        const result = await scrapePosts(urls, { delay, headless: !showBrowser });
+        const result = await scrapePosts(urls, { delay, headless: !showBrowser, username, checkpointEvery: 1 });
         result.username = username;
         
         console.log(`\n✅ Successfully scraped: ${result.total_scraped} posts`);

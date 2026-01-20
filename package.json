@@ -9,8 +9,6 @@
     "urls": "node scrape_urls.js",
     "posts": "node scrape_posts.js",
     "comments": "node scrape_comments.js",
-    "pipeline": "node scrape_pipeline.js",
-    "scrape": "node scrape_pipeline.js",
     "import": "node import_to_db.js"
   },
   "keywords": [
